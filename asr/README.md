@@ -86,6 +86,49 @@ LoRA doesn't beat this, the training isn't helping:
 ./.venv/bin/python scripts/evaluate.py --adapter none
 ```
 
+## Choosing the language proxy (`en` vs `bn`)
+
+Whisper has no `trp` token, so one must be borrowed, and the choice decides
+which phonetic priors the model leans on. It is a real experiment, not a
+formality:
+
+- **`en`** (default) matches the *script* — our transcripts are Romanized
+  Latin, and Whisper's `en` path expects exactly that orthography.
+- **`bn`** matches the *region* — Bengali is phonetically far closer to
+  Kokborok, and is the bridge Lahja's TTS side already uses. The mismatch is
+  that Whisper's `bn` decoder is heavily biased toward Bengali script, so it
+  may fight Latin-script targets.
+
+Which wins is an empirical question that only real audio can answer. Run
+both arms and compare:
+
+```bash
+./.venv/bin/python scripts/train.py \
+  --set model.language=en \
+  --set run_name=trp_en --set train.output_dir=checkpoints/trp_en
+
+./.venv/bin/python scripts/train.py \
+  --set model.language=bn \
+  --set run_name=trp_bn --set train.output_dir=checkpoints/trp_bn
+
+./.venv/bin/python scripts/evaluate.py --adapter checkpoints/trp_en --set run_name=trp_en
+./.venv/bin/python scripts/evaluate.py --adapter checkpoints/trp_bn --set run_name=trp_bn
+```
+
+Then compare the `wer`/`cer` rows in `results/metrics.jsonl`.
+
+**Give each arm its own `run_name` and `train.output_dir`, as above.** These
+do not vary automatically with `model.language`, so running the second arm
+with only `--set model.language=bn` would resume from the first arm's
+checkpoint, inherit its LoRA weights, and overwrite its adapter — a
+comparison that looks fine and means nothing. `train.py` records the run's
+identity in `run_meta.json` and refuses to resume when the model, language
+proxy, task, or LoRA settings differ, so this fails loudly instead. Don't
+work around it by deleting the file; use separate directories.
+
+Also compare both against the untuned baseline (`--adapter none`) — if
+neither proxy beats it, the problem is upstream of this choice.
+
 ## Splits are disjoint by speaker
 
 Splitting by utterance would put the same voice in train and test, and on a

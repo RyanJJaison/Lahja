@@ -70,6 +70,61 @@ def resolve_resume(resume_cfg, output_dir: Path, cli_resume: str | None):
     return str(path)
 
 
+def run_identity(cfg) -> dict:
+    """The config fields that make two runs incomparable if they differ."""
+    return {
+        "model": cfg.get("model.name"),
+        "language_proxy": cfg.get("model.language"),
+        "task": cfg.get("model.task"),
+        "lora": cfg.section("lora"),
+    }
+
+
+def check_run_identity(output_dir: Path, cfg, resume_from) -> Path:
+    """Refuse to mix two different runs inside one output_dir.
+
+    ``train.output_dir`` does not vary with ``model.language``, so an A/B of
+    language proxies (en vs bn) driven only by ``--set model.language=bn``
+    would resume from the *other* arm's checkpoint, inherit its LoRA weights
+    and overwrite its adapter -- producing a comparison that looks fine and
+    means nothing. Compare against what the directory was last trained as,
+    and stop rather than silently contaminate the result.
+    """
+    meta_path = output_dir / "run_meta.json"
+    current = run_identity(cfg)
+
+    if meta_path.exists():
+        previous = json.loads(meta_path.read_text(encoding="utf-8"))
+        differences = {
+            key: (previous.get(key), current.get(key))
+            for key in current
+            if previous.get(key) != current.get(key)
+        }
+        if differences:
+            detail = "\n".join(
+                f"  {key}: checkpoint={old!r} but config={new!r}"
+                for key, (old, new) in differences.items()
+            )
+            message = (
+                f"{output_dir} was last trained with a different configuration:\n{detail}"
+            )
+            if resume_from:
+                raise SystemExit(
+                    f"ERROR: refusing to resume - {message}\n\n"
+                    f"Resuming here would start from the other run's weights and "
+                    f"overwrite its adapter.\nGive this run its own directory, e.g.:\n"
+                    f"  --set run_name=whisper_small_lora_trp_{current['language_proxy']} "
+                    f"--set train.output_dir=checkpoints/whisper_small_lora_trp_"
+                    f"{current['language_proxy']}\n"
+                    f"Or pass --resume none to start fresh (this overwrites the adapter)."
+                )
+            logger.warning("%s\nStarting fresh here will OVERWRITE that adapter.", message)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(current, indent=2, default=str), encoding="utf-8")
+    return meta_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_config_args(parser)
@@ -87,6 +142,11 @@ def main() -> int:
     processed_dir = cfg.resolve_path("paths.processed_dir", "data/processed")
     output_dir = cfg.resolve_path("train.output_dir", "checkpoints/run")
     metrics_file = cfg.resolve_path("paths.metrics_file", "results/metrics.jsonl")
+
+    # Checked before the model loads, so a misconfigured A/B fails in a
+    # second rather than after a download and a training run.
+    resume_from = resolve_resume(cfg.get("train.resume", "auto"), output_dir, args.resume)
+    check_run_identity(output_dir, cfg, resume_from)
 
     train_utts = read_split(processed_dir / "train.jsonl")
     val_path = processed_dir / "val.jsonl"
@@ -156,8 +216,6 @@ def main() -> int:
         data_collator=collator,
         processing_class=processor.feature_extractor,
     )
-
-    resume_from = resolve_resume(cfg.get("train.resume", "auto"), output_dir, args.resume)
 
     started = time.time()
     result = trainer.train(resume_from_checkpoint=resume_from)

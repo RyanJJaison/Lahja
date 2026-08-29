@@ -22,6 +22,32 @@ Note that Lahja's TTS side uses *Romanized* Kokborok, so the two components do
 not share a script. Don't assume either convention when moving text between
 them.
 
+## Trained weights live on the Hugging Face Hub, not in this repo
+
+**[`RyanJJaison/kokborok-whisper-lora`](https://huggingface.co/RyanJJaison/kokborok-whisper-lora)**
+
+`checkpoints/` is gitignored, so cloning this repo gets you the code and the
+data pipeline but **no trained adapter**. That is deliberate: there is one
+source of truth for the weights and it is the Hub. A 14 MB adapter committed
+here would be permanent in git history and would drift from whatever was last
+published.
+
+Two ways to get a usable model:
+
+```bash
+# (a) pull the published adapter
+hf download RyanJJaison/kokborok-whisper-lora \
+  --local-dir checkpoints/whisper_small_lora_trp
+
+# (b) or retrain it - ~16 min on a 6 GB GPU, reproducible from this repo alone
+./.venv/bin/python scripts/prepare_data.py
+./.venv/bin/python scripts/train.py
+```
+
+Read the model card before trusting the output. It is a **research/demo
+checkpoint**: test WER is still above 1.0, and the corpus is a single speaker,
+so real-world WER on an unseen voice will be worse. See [Results](#results).
+
 ## Setup
 
 The ASR component keeps its **own** virtualenv. Lahja's root
